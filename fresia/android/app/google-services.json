@@ -1,0 +1,30 @@
+{
+  "project_info": {
+    "project_number": "804369813454",
+    "firebase_url": "https://fres-ia-default-rtdb.firebaseio.com",
+    "project_id": "fres-ia",
+    "storage_bucket": "fres-ia.appspot.com"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:804369813454:android:ace95bac3b27a2e182259f",
+        "android_client_info": {
+          "package_name": "mx.edu.utch.fresia"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAX8wce4npMfAMWXJkNo2QxhKMrSQVvkTE"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
