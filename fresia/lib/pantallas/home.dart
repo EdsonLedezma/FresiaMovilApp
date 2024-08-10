@@ -20,7 +20,7 @@ class _HomeState extends State<Home> {
     super.initState();
     // Asegúrate de que la conexión no sea nula
     if (widget.conexion == null) {
-     print("conexion nula");
+      // Manejar el caso de conexión nula si es necesario
     }
   }
 
@@ -81,5 +81,11 @@ class _HomeState extends State<Home> {
     );
   }
 
-
+  @override
+  void dispose() {
+    if (widget.conexion != null) {
+      // Cerrar la conexión de forma segura
+    }
+    super.dispose();
+  }
 }

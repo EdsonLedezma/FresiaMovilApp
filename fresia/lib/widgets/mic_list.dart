@@ -6,6 +6,9 @@ import 'package:flutter_bluetooth_serial/flutter_bluetooth_serial.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_storage/firebase_storage.dart';
+import '../firebase_options.dart';
 
 class MicList extends StatefulWidget {
   final BluetoothConnection? conexion;
@@ -26,22 +29,22 @@ class MicListState extends State<MicList> {
 
   final AudioPlayer audioPlayer = AudioPlayer();
   late StreamSubscription<Uint8List> audioStreamSubscription;
-
   List<File?> wavFiles = [null, null, null, null];
   bool isRecording = false;
   bool isAudioReady = false;
+  bool isPrepared = false; // Para saber si está preparado para grabar
 
   final int sampleRate = 44100;
   final int bitsPerSample = 16;
   final int numChannels = 1;
 
   late File tempFile;
+  String vehicleBrand = ""; // Variable para almacenar la marca del vehículo
 
   @override
   void initState() {
     super.initState();
     requestStoragePermission();
-    createTempWavFile(); // Crear archivo .wav al iniciar
     listenForAudio();
   }
 
@@ -56,6 +59,27 @@ class MicListState extends State<MicList> {
     }
   }
 
+  void listenForAudio() {
+    if (widget.conexion != null && widget.conexion!.isConnected) {
+      audioStreamSubscription = widget.conexion!.input!.listen(
+            (Uint8List data) {
+          if (data.isNotEmpty && isRecording) {
+            writeToTempFile(data);
+          }
+        },
+        onError: (error) {
+          print('Error al recibir audio: $error');
+        },
+        onDone: () {
+          print('La conexión se ha cerrado');
+          setState(() {
+            isRecording = false;
+          });
+        },
+      );
+    }
+  }
+
   Future<void> createTempWavFile() async {
     Directory appDir = await getApplicationDocumentsDirectory();
     tempFile = File('${appDir.path}/temp_audio.wav');
@@ -63,30 +87,6 @@ class MicListState extends State<MicList> {
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('Listo para grabar')),
     );
-  }
-
-  void listenForAudio() {
-    if (widget.conexion != null && widget.conexion!.isConnected) {
-      audioStreamSubscription = widget.conexion!.input!.listen(
-            (Uint8List data) {
-          if (data.isNotEmpty) {
-            if (isRecording) {
-              writeToTempFile(data);
-            }
-          }
-        },
-        onError: (error) {
-          print('Error al recibir audio: $error');
-        },
-        onDone: () {
-          // Manejo de desconexión
-          print('La conexión se ha cerrado');
-          setState(() {
-            isRecording = false; // Detener la grabación si se cierra la conexión
-          });
-        },
-      );
-    }
   }
 
   Future<void> writeToTempFile(Uint8List data) async {
@@ -121,13 +121,13 @@ class MicListState extends State<MicList> {
   }
 
   Future<void> startRecording(int micNumber) async {
-    if (!isRecording) {
+    if (isPrepared && !isRecording) {
       setState(() {
         isRecording = true;
         isAudioReady = false;
       });
 
-      // Grabar durante 10 segundos
+      // Grabar por 10 segundos
       await Future.delayed(const Duration(seconds: 10));
 
       setState(() {
@@ -135,11 +135,24 @@ class MicListState extends State<MicList> {
         isAudioReady = true;
       });
 
-      // Escribir el archivo WAV
+      // Esperar un segundo para asegurarte que todos los datos se escriban
+      await Future.delayed(const Duration(seconds: 1));
+
+      // Escribir archivo WAV
       await writeWavFile(tempFile.readAsBytesSync(), micNumber);
-      await tempFile.delete(); // Opcional: Eliminar archivo temporal
-      await createTempWavFile(); // Crear un nuevo archivo temporal
+      await tempFile.delete();
+      await createTempWavFile();
     }
+  }
+
+  Future<void> prepareRecording() async {
+    await createTempWavFile();
+    setState(() {
+      isPrepared = true; // Marca como preparado
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Preparado para grabar')),
+    );
   }
 
   Future<void> writeWavFile(Uint8List audioData, int micNumber) async {
@@ -151,43 +164,80 @@ class MicListState extends State<MicList> {
     File wavFile = File('${appDir.path}/mic_${micNumber}_audio.wav');
     wavFiles[micNumber - 1] = wavFile;
 
-    // Escribir los datos de audio y el encabezado en el archivo
     await wavFile.writeAsBytes([...header, ...audioData]);
     print('Archivo WAV creado en: ${wavFile.path}');
+
+    // Subir archivo a Firebase Storage y guardar datos en Firestore
+    await uploadWavToFirebase(wavFile, micNumber);
   }
 
-  Uint8List createWavHeader(int sampleRate, int bitsPerSample, int numChannels, int dataSize) {
+  Uint8List createWavHeader(int sampleRate, int byteRate, int bitsPerSample, int dataSize) {
     List<int> header = [];
 
-    // RIFF header
     header.addAll('RIFF'.codeUnits);
-    header.addAll((36 + dataSize).toBytes(4)); // Chunk size
+    header.addAll((36 + dataSize).toBytes(4));
     header.addAll('WAVE'.codeUnits);
 
-    // fmt subchunk
     header.addAll('fmt '.codeUnits);
-    header.addAll((16).toBytes(4)); // Subchunk size
-    header.addAll((1).toBytes(2)); // Audio format (PCM)
-    header.addAll((1).toBytes(2)); // Number of channels (mono)
-    header.addAll((sampleRate).toBytes(4)); // Sample rate
-    header.addAll(((sampleRate * 1 * 16) ~/ 8).toBytes(4)); // Byte rate
-    header.addAll(((1 * 16) ~/ 8).toBytes(2)); // Block align
-    header.addAll((16).toBytes(2)); // Bits per sample
+    header.addAll((16).toBytes(4));
+    header.addAll((1).toBytes(2));
+    header.addAll((numChannels).toBytes(2));
+    header.addAll((sampleRate).toBytes(4));
+    header.addAll((byteRate).toBytes(4));
+    header.addAll(((numChannels * bitsPerSample) ~/ 8).toBytes(2));
+    header.addAll((bitsPerSample).toBytes(2));
 
-    // data subchunk
     header.addAll('data'.codeUnits);
-    header.addAll(dataSize.toBytes(4)); // Data size
+    header.addAll(dataSize.toBytes(4));
 
     return Uint8List.fromList(header);
   }
 
-  Future<void> playAudio(File wavFile) async {
-    await audioPlayer.play(DeviceFileSource(wavFile.path));
+  Future<void> uploadWavToFirebase(File wavFile, int micNumber) async {
+    try {
+      final storageRef = FirebaseStorage.instance.ref().child('audios/${wavFile.path.split('/').last}');
+      final uploadTask = await storageRef.putFile(wavFile);
+      final downloadUrl = await storageRef.getDownloadURL();
+
+      await FirebaseFirestore.instance.collection('Audios').add({
+        'Marca': vehicleBrand,
+        'Parte': micLabels[micNumber - 1],
+        'Url': downloadUrl,
+      });
+
+      print('Datos subidos a Firestore correctamente');
+    } catch (e) {
+      print('Error al subir archivo a Firebase: $e');
+    }
   }
+
+  void playAudio(File wavFile) async {
+    await audioPlayer.setSourceUrl(wavFile.path);
+    await audioPlayer.resume();
+  }
+
   @override
   Widget build(BuildContext context) {
     return Column(
       children: [
+        Padding(
+          padding: const EdgeInsets.all(8.0),
+          child: TextFormField(
+            decoration: const InputDecoration(
+              labelText: 'Marca del Vehículo',
+              border: OutlineInputBorder(),
+            ),
+            onChanged: (value) {
+              vehicleBrand = value;
+            },
+          ),
+        ),
+        ElevatedButton(
+          onPressed: () {
+            prepareRecording(); // Preparar la grabación
+          },
+          child: const Text('Preparar'),
+        ),
         Expanded(
           child: ListView.builder(
             itemCount: micLabels.length,
@@ -212,23 +262,23 @@ class MicListState extends State<MicList> {
                       ),
                       const SizedBox(height: 8.0),
                       Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: [
-                            ElevatedButton(
-                              onPressed: () {
-                                changeMic(index + 1);
-                              },
-                              child: const Text('Cambiar Micrófono'),
-                            ),
-                            ElevatedButton(
-                              onPressed: () {
-                                if (!isRecording) {
-                                  startRecording(index + 1);
-                                }
-                              },
-                              child: const Text('Grabar'),
-                            ),
-                          ]
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          ElevatedButton(
+                            onPressed: () {
+                              changeMic(index + 1);
+                            },
+                            child: const Text('Cambiar Micrófono'),
+                          ),
+                          ElevatedButton(
+                            onPressed: () {
+                              if (isPrepared) {
+                                startRecording(index + 1);
+                              }
+                            },
+                            child: const Text('Grabar'),
+                          ),
+                        ],
                       ),
                       const SizedBox(height: 8.0),
                       if (isAudioReady && wavFiles[index] != null)
@@ -254,10 +304,13 @@ class MicListState extends State<MicList> {
       ],
     );
   }
-@override
-void dispose() {
+
+  @override
+  void dispose() {
+    audioStreamSubscription.cancel();
+    audioPlayer.dispose();
     super.dispose();
-}
+  }
 }
 
 extension on int {

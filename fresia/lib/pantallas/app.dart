@@ -8,6 +8,7 @@ import 'login.dart';
 class App extends StatelessWidget {
   const App({super.key});
 
+
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
@@ -31,7 +32,7 @@ class App extends StatelessWidget {
       ),
       routes: {
         "/login": (context) => const Login(),
-        "/": (context) => const Home(conexion: null,),
+        "/": (context) => const Home(conexion: null),
         "registro": (context) => const Registro(),
         "estadisticas": (context) => const Estadisticas(),
         "fresia": (context) => const Fresia(),
